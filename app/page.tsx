@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Droplets, 
   LayoutDashboard, 
@@ -40,6 +40,8 @@ import {
   MapPin as MapPinIcon,
   LocateFixed
 } from 'lucide-react';
+import { createClient } from '@/lib/supabase/client';
+import { type Database } from '@/database.types';
 
 // Mock Roles
 type Role = 'donor' | 'recipient' | 'hospital' | 'admin';
@@ -84,8 +86,11 @@ const MOCK_MAP_DONORS = [
 ];
 
 export default function BloodBankApp() {
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const supabase = createClient();
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
   const [authMode, setAuthMode] = useState<'login' | 'signup' | 'landing'>('landing');
+  const [user, setUser] = useState<any>(null);
+  const [profile, setProfile] = useState<Database['public']['Tables']['profiles']['Row'] | null>(null);
   const [role, setRole] = useState<Role>('donor');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -96,6 +101,85 @@ export default function BloodBankApp() {
   const [showRequestForm, setShowRequestForm] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const [mapRadius, setMapRadius] = useState(5);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const checkUser = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        setUser(user);
+        setIsAuthenticated(true);
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', user.id)
+          .single();
+        if (profile) {
+          setProfile(profile);
+          setRole(profile.role as Role);
+        }
+      } else {
+        setIsAuthenticated(false);
+      }
+    };
+    checkUser();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session?.user) {
+        setUser(session.user);
+        setIsAuthenticated(true);
+      } else {
+        setUser(null);
+        setProfile(null);
+        setIsAuthenticated(false);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const handleAuth = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setLoading(true);
+    const formData = new FormData(e.currentTarget);
+    const email = formData.get('email') as string;
+    const password = formData.get('password') as string;
+    const fullName = formData.get('fullName') as string;
+
+    try {
+      if (authMode === 'signup') {
+        const { data, error } = await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            data: { full_name: fullName, role }
+          }
+        });
+        if (error) throw error;
+        if (data.user) {
+          await supabase.from('profiles').insert({
+            id: data.user.id,
+            full_name: fullName,
+            role: role
+          });
+        }
+        alert('Check your email for verification!');
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+      }
+    } catch (error: any) {
+      alert(error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setIsAuthenticated(false);
+    setAuthMode('landing');
+  };
 
   const roles: { id: Role; label: string; icon: React.ReactNode }[] = [
     { id: 'donor', label: 'Donor', icon: <UserCircle size={18} /> },
@@ -232,26 +316,32 @@ export default function BloodBankApp() {
             {authMode === 'login' ? 'Enter your credentials to continue' : 'Join our community of lifesavers today'}
           </p>
 
-          <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); setIsAuthenticated(true); }}>
+          <form className="space-y-4" onSubmit={handleAuth}>
             {authMode === 'signup' && (
-              <div className="grid grid-cols-2 gap-4 mb-4">
-                <button type="button" onClick={() => setRole('donor')} className={`p-3 rounded-xl border-2 font-bold text-sm transition-all ${role === 'donor' ? 'border-red-600 bg-red-50 text-red-600' : 'border-slate-100 text-slate-500'}`}>Donor</button>
-                <button type="button" onClick={() => setRole('recipient')} className={`p-3 rounded-xl border-2 font-bold text-sm transition-all ${role === 'recipient' ? 'border-red-600 bg-red-50 text-red-600' : 'border-slate-100 text-slate-500'}`}>Recipient</button>
-              </div>
+              <>
+                <div className="grid grid-cols-2 gap-4 mb-4">
+                  <button type="button" onClick={() => setRole('donor')} className={`p-3 rounded-xl border-2 font-bold text-sm transition-all ${role === 'donor' ? 'border-red-600 bg-red-50 text-red-600' : 'border-slate-100 text-slate-500'}`}>Donor</button>
+                  <button type="button" onClick={() => setRole('recipient')} className={`p-3 rounded-xl border-2 font-bold text-sm transition-all ${role === 'recipient' ? 'border-red-600 bg-red-50 text-red-600' : 'border-slate-100 text-slate-500'}`}>Recipient</button>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-slate-500 uppercase ml-1">Full Name</label>
+                  <input name="fullName" type="text" required className="w-full p-4 bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:ring-2 focus:ring-red-500 transition-all" placeholder="John Doe" />
+                </div>
+              </>
             )}
             
             <div className="space-y-1">
               <label className="text-xs font-bold text-slate-500 uppercase ml-1">Email Address</label>
-              <input type="email" required className="w-full p-4 bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:ring-2 focus:ring-red-500 transition-all" placeholder="name@example.com" />
+              <input name="email" type="email" required className="w-full p-4 bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:ring-2 focus:ring-red-500 transition-all" placeholder="name@example.com" />
             </div>
             
             <div className="space-y-1">
               <label className="text-xs font-bold text-slate-500 uppercase ml-1">Password</label>
-              <input type="password" required className="w-full p-4 bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:ring-2 focus:ring-red-500 transition-all" placeholder="••••••••" />
+              <input name="password" type="password" required className="w-full p-4 bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:ring-2 focus:ring-red-500 transition-all" placeholder="••••••••" />
             </div>
 
-            <button type="submit" className="w-full py-4 bg-red-600 text-white rounded-2xl font-bold text-lg hover:bg-red-700 transition-all shadow-lg shadow-red-100 mt-4">
-              {authMode === 'login' ? 'Sign In' : 'Create Account'}
+            <button type="submit" disabled={loading} className="w-full py-4 bg-red-600 text-white rounded-2xl font-bold text-lg hover:bg-red-700 transition-all shadow-lg shadow-red-100 mt-4 disabled:opacity-50">
+              {loading ? 'Processing...' : (authMode === 'login' ? 'Sign In' : 'Create Account')}
             </button>
           </form>
 
@@ -315,11 +405,11 @@ export default function BloodBankApp() {
             <div className="relative -mt-12 mb-4">
               <div className="w-24 h-24 rounded-2xl bg-white p-1 shadow-md">
                 <div className="w-full h-full rounded-xl bg-slate-100 flex items-center justify-center text-3xl font-bold text-slate-400">
-                  JD
+                  {profile?.full_name?.substring(0, 2).toUpperCase() || 'JD'}
                 </div>
               </div>
             </div>
-            <h3 className="text-xl font-bold">John Doe</h3>
+            <h3 className="text-xl font-bold">{profile?.full_name || 'John Doe'}</h3>
             <p className="text-slate-500 text-sm mb-4">O+ Positive Donor</p>
             
             <div className="space-y-3">
@@ -329,7 +419,7 @@ export default function BloodBankApp() {
               </div>
               <div className="flex items-center gap-3 text-sm text-slate-600">
                 <Mail size={16} className="text-slate-400" />
-                <span>john.doe@example.com</span>
+                <span>{user?.email || 'john.doe@example.com'}</span>
               </div>
               <div className="flex items-center gap-3 text-sm text-slate-600">
                 <MapPinned size={16} className="text-slate-400" />
@@ -899,6 +989,8 @@ export default function BloodBankApp() {
     </div>
   );
 
+  if (isAuthenticated === null) return <div className="min-h-screen flex items-center justify-center"><Droplets className="animate-bounce text-red-600" size={48} /></div>;
+
   if (!isAuthenticated) {
     return authMode === 'landing' ? renderLandingPage() : renderAuthPage();
   }
@@ -918,7 +1010,10 @@ export default function BloodBankApp() {
           {sidebarItems[role].map((item) => (
             <button
               key={item.id}
-              onClick={() => setActiveTab(item.id)}
+              onClick={() => {
+                console.log(`Sidebar tab clicked. activeTab: ${activeTab}, item.id: ${item.id}`);
+                setActiveTab(item.id);
+              }}
               className={`w-full flex items-center gap-3 p-3 rounded-xl transition-colors ${
                 activeTab === item.id 
                   ? 'bg-red-50 text-red-600 font-medium' 
@@ -936,7 +1031,7 @@ export default function BloodBankApp() {
             <Settings size={20} />
             {isSidebarOpen && <span>Settings</span>}
           </button>
-          <button className="w-full flex items-center gap-3 p-3 text-red-500 hover:bg-red-50 rounded-xl transition-colors">
+          <button onClick={handleLogout} className="w-full flex items-center gap-3 p-3 text-red-500 hover:bg-red-50 rounded-xl transition-colors">
             <LogOut size={20} />
             {isSidebarOpen && <span>Logout</span>}
           </button>
@@ -971,7 +1066,10 @@ export default function BloodBankApp() {
             </div>
 
             <div className="relative">
-              <button onClick={() => setShowNotifications(!showNotifications)} className="p-2 text-slate-500 hover:bg-slate-100 rounded-full relative">
+              <button onClick={() => {
+                console.log(`Notifications bell clicked. showNotifications: ${!showNotifications}`);
+                setShowNotifications(!showNotifications);
+              }} className="p-2 text-slate-500 hover:bg-slate-100 rounded-full relative">
                 <Bell size={20} />
                 <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full border-2 border-white"></span>
               </button>
@@ -980,10 +1078,12 @@ export default function BloodBankApp() {
 
             <div className="flex items-center gap-3 pl-6 border-l border-slate-200">
               <div className="text-right hidden sm:block">
-                <p className="text-sm font-medium">John Doe</p>
+                <p className="text-sm font-medium">{profile?.full_name || 'User'}</p>
                 <p className="text-xs text-slate-500 capitalize">{role}</p>
               </div>
-              <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-red-500 to-pink-500 flex items-center justify-center text-white font-bold">JD</div>
+              <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-red-500 to-pink-500 flex items-center justify-center text-white font-bold">
+                {profile?.full_name?.substring(0, 2).toUpperCase() || 'U'}
+              </div>
             </div>
           </div>
         </header>
@@ -993,16 +1093,22 @@ export default function BloodBankApp() {
           <div className="max-w-7xl mx-auto">
             <div className="mb-8 flex justify-between items-end">
               <div>
-                <h2 className="text-3xl font-bold text-slate-900">Welcome back, John! 👋</h2>
+                <h2 className="text-3xl font-bold text-slate-900">Welcome back, {profile?.full_name?.split(' ')[0] || 'User'}! 👋</h2>
                 <p className="text-slate-500 mt-1">Here's what's happening with your {role} account today.</p>
               </div>
               {role === 'donor' && activeTab === 'dashboard' && (
-                <button onClick={() => setShowRegistration(true)} className="bg-red-600 text-white px-6 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-red-700 transition-all shadow-lg shadow-red-100">
+                <button onClick={() => {
+                  console.log(`Donor dashboard: Update Info clicked. showRegistration: ${!showRegistration}`);
+                  setShowRegistration(true);
+                }} className="bg-red-600 text-white px-6 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-red-700 transition-all shadow-lg shadow-red-100">
                   <PlusCircle size={20} /> Update Info
                 </button>
               )}
               {role === 'recipient' && activeTab === 'dashboard' && (
-                <button onClick={() => setShowRequestForm(true)} className="bg-red-600 text-white px-6 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-red-700 transition-all shadow-lg shadow-red-100">
+                <button onClick={() => {
+                  console.log(`Recipient dashboard: Request Blood clicked. showRequestForm: ${!showRequestForm}`);
+                  setShowRequestForm(true);
+                }} className="bg-red-600 text-white px-6 py-3 rounded-xl font-bold flex items-center gap-2 hover:bg-red-700 transition-all shadow-lg shadow-red-100">
                   <PlusCircle size={20} /> Request Blood
                 </button>
               )}
